@@ -1,0 +1,62 @@
+name: Deploy to GKE
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "production"
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER_NAME }}
+  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  NAMESPACE: nexus
+  USE_GKE_GCLOUD_AUTH_PLUGIN: "true"
+  ROLLOUT_TIMEOUT: "300s"
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_ZONE }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Patch service account annotation
+        run: |
+          sed -i "s/YOUR_PROJECT_ID/${{ env.PROJECT_ID }}/g" \
+            kustomize/overlays/production/serviceaccount-patch.yaml
+
+      - name: Ensure namespace exists
+        run: |
+          kubectl create namespace "${{ env.NAMESPACE }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy to GKE
+        run: |
+          kubectl apply -k kustomize/overlays/production
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/nexus \
+            --namespace "${{ env.NAMESPACE }}" \
+            --timeout="${{ env.ROLLOUT_TIMEOUT }}"
